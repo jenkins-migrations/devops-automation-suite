@@ -1,0 +1,186 @@
+# Migrated from Jenkinsfile (declarative pipeline with parameters and input approvals)
+name: Deployment Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      # Jenkins parameters { choice(name: 'ENVIRONMENT', ...) }
+      environment:
+        description: 'Target deployment environment'
+        type: choice
+        required: true
+        default: dev
+        options:
+          - dev
+          - staging
+          - production
+      # Jenkins parameters { booleanParam(name: 'SKIP_TESTS', ...) }
+      skip_tests:
+        description: 'Skip test execution'
+        type: boolean
+        required: false
+        default: false
+      # Jenkins parameters { string(name: 'VERSION', ...) }
+      version:
+        description: 'Release version'
+        type: string
+        required: false
+        default: '1.0.0'
+      # Jenkins input parameters [ choice(name: 'DEPLOYMENT_TYPE', ...) ] from the
+      # production approval gate; collected up front because GitHub Actions
+      # environment approvals cannot gather parameters.
+      deployment_type:
+        description: 'Deployment strategy (production only)'
+        type: choice
+        required: false
+        default: blue-green
+        options:
+          - blue-green
+          - rolling
+          - canary
+
+permissions:
+  contents: read
+
+jobs:
+  # Jenkins stage('Build')
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # actions/setup-java v5.7.0 - pinned to commit SHA
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build
+        run: |
+          echo "Building version ${{ inputs.version }}"
+          mvn clean package -DskipTests=${{ inputs.skip_tests }}
+
+  # Jenkins stage('Test') with when { not { params.SKIP_TESTS } }
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ !inputs.skip_tests }}
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # actions/setup-java v5.7.0 - pinned to commit SHA
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run tests
+        run: mvn test
+
+      # Jenkins publishTestResults testResultsPattern: '**/surefire-reports/*.xml'
+      # actions/upload-artifact v6.0.0 - pinned to commit SHA
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: surefire-reports
+          path: '**/surefire-reports/*.xml'
+          if-no-files-found: warn
+
+  # Jenkins stage('Deploy to Dev') with when { expression { params.ENVIRONMENT == 'dev' } }
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    needs: [build, test]
+    if: ${{ always() && needs.build.result == 'success' && needs.test.result != 'failure' && inputs.environment == 'dev' }}
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Deploy to development
+        run: |
+          echo "Deploying to development environment"
+          kubectl apply -f k8s/dev/
+
+  # Jenkins stage('Approval for Staging') + deployment.
+  # The Jenkins `input` step is replaced by a GitHub Environment protection rule:
+  # configure required reviewers (and a wait timer) on the `staging` environment.
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, test]
+    if: ${{ always() && needs.build.result == 'success' && needs.test.result != 'failure' && inputs.environment == 'staging' }}
+    environment: staging
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment"
+          kubectl apply -f k8s/staging/
+
+  # Jenkins stage('Production Approval') + deployment.
+  # The Jenkins `input` step (with submitterParameter and DEPLOYMENT_TYPE choice)
+  # is replaced by a GitHub Environment protection rule on `production`; the
+  # deployment strategy is supplied as the `deployment_type` workflow input and
+  # the approver is available via the environment's deployment record.
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, test]
+    if: ${{ always() && needs.build.result == 'success' && needs.test.result != 'failure' && inputs.environment == 'production' }}
+    environment: production
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Deploy to production
+        env:
+          DEPLOYMENT_TYPE: ${{ inputs.deployment_type }}
+        run: |
+          echo "Deployment type: ${DEPLOYMENT_TYPE}"
+          echo "Deploying to production with ${DEPLOYMENT_TYPE} strategy"
+          kubectl apply -f "k8s/production/${DEPLOYMENT_TYPE}/"
+
+  # Jenkins stage('Smoke Tests') with when { anyOf { staging, production } }
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: ${{ always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success') }}
+    steps:
+      - name: Run smoke tests
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          echo "Running smoke tests against ${TARGET_ENVIRONMENT}"
+          curl -f "http://${TARGET_ENVIRONMENT}.example.com/health"
+
+  # Jenkins post { success / failure }
+  notify:
+    name: Post Actions
+    runs-on: ubuntu-latest
+    needs: [build, test, deploy-dev, deploy-staging, deploy-production, smoke-tests]
+    if: always()
+    steps:
+      - name: Success notification
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        run: echo "Deployment to ${{ inputs.environment }} completed successfully"
+
+      - name: Failure notification
+        if: ${{ contains(needs.*.result, 'failure') }}
+        run: echo "Deployment to ${{ inputs.environment }} failed"
