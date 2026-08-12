@@ -1,0 +1,129 @@
+# Migrated from zomatoanypoint/Jenkinsfile (declarative pipeline)
+name: Zomato AnyPoint Deployment
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Jenkins: credentials('anypoint.credentials') -> ANYPOINT_CREDENTIALS_USR / _PSW
+  ANYPOINT_CREDENTIALS_USR: ${{ secrets.ANYPOINT_CREDENTIALS_USR }}
+  ANYPOINT_CREDENTIALS_PSW: ${{ secrets.ANYPOINT_CREDENTIALS_PSW }}
+
+jobs:
+  # Jenkins stage('Unit Test')
+  unit-test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # actions/setup-java v5.7.0 - pinned to commit SHA
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run Unit Tests
+        run: |
+          echo "Running Unit Tests..."
+          mvn clean test
+
+  # Jenkins stage('Deploy Standalone')
+  deploy-standalone:
+    name: Deploy Standalone
+    runs-on: ubuntu-latest
+    needs: unit-test
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # actions/setup-java v5.7.0 - pinned to commit SHA
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Deploy Standalone
+        run: |
+          echo "Deploying in Standalone mode..."
+          mvn deploy -P standalone
+
+  # Jenkins stage('Deploy to AnyPoint')
+  deploy-anypoint:
+    name: Deploy to AnyPoint
+    runs-on: ubuntu-latest
+    needs: deploy-standalone
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # actions/setup-java v5.7.0 - pinned to commit SHA
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Deploy to Anypoint Platform
+        run: |
+          echo "Deploying to Anypoint Platform..."
+          mvn deploy -P arm \
+            -Darm.target.name=local-4.0.0-ee \
+            -Danypoint.username="${ANYPOINT_CREDENTIALS_USR}" \
+            -Danypoint.password="${ANYPOINT_CREDENTIALS_PSW}"
+
+  # Jenkins stage('Deploy to CloudHub')
+  deploy-cloudhub:
+    name: Deploy to CloudHub
+    runs-on: ubuntu-latest
+    needs: deploy-anypoint
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # actions/setup-java v5.7.0 - pinned to commit SHA
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Deploy to CloudHub
+        run: |
+          echo "Deploying to CloudHub..."
+          mvn deploy -P cloudhub \
+            -Dmule.version=4.0.0 \
+            -Danypoint.username="${ANYPOINT_CREDENTIALS_USR}" \
+            -Danypoint.password="${ANYPOINT_CREDENTIALS_PSW}"
+
+  # Jenkins post { success / failure }
+  notify:
+    name: Post Actions
+    runs-on: ubuntu-latest
+    needs: [unit-test, deploy-standalone, deploy-anypoint, deploy-cloudhub]
+    if: always()
+    steps:
+      - name: Success notification
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        run: echo "✅ Deployment completed successfully!"
+
+      - name: Failure notification
+        if: ${{ contains(needs.*.result, 'failure') }}
+        run: echo "❌ Deployment failed! Check logs for errors."

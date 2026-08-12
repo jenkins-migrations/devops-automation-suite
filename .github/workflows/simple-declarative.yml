@@ -1,0 +1,37 @@
+# Migrated from simpledeclarative/Jenkinsfile (declarative pipeline)
+name: Simple Declarative
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Jenkins stage('Hello')
+  hello:
+    name: Hello
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Echo Hello
+        run: echo "Hello"
+
+  # Jenkins stage('World')
+  world:
+    name: World
+    runs-on: ubuntu-latest
+    needs: hello
+    steps:
+      # actions/checkout v6.1.0 - pinned to commit SHA
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Echo World
+        run: echo "World"
