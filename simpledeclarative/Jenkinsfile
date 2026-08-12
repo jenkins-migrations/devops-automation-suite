@@ -1,0 +1,17 @@
+// Source: https://github.com/jenkinsci/pipeline-examples (MIT License)
+// Test case: Simple declarative pipeline with basic stages
+pipeline {
+  agent any
+  stages {
+    stage("Hello") {
+      steps {
+        echo "Hello"
+      }
+    }
+    stage("World") {
+      steps {
+        echo "World"
+      }
+    }
+  }
+}
