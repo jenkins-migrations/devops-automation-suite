@@ -83,8 +83,8 @@ jobs:
           KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG }}
         run: |
           test -n "${KUBE_CONFIG_DATA}"
+          umask 077
           printf '%s' "${KUBE_CONFIG_DATA}" | base64 --decode > "${RUNNER_TEMP}/kubeconfig"
-          chmod 600 "${RUNNER_TEMP}/kubeconfig"
           echo "KUBECONFIG=${RUNNER_TEMP}/kubeconfig" >> "${GITHUB_ENV}"
 
       - name: Deploy
