@@ -1,0 +1,130 @@
+name: Deployment Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target deployment environment
+        type: choice
+        required: true
+        options:
+          - dev
+          - staging
+          - production
+      skip_tests:
+        description: Skip test execution
+        type: boolean
+        required: false
+        default: false
+      version:
+        description: Release version
+        type: string
+        required: false
+        default: 1.0.0
+      deployment_type:
+        description: Deployment strategy (production only)
+        type: choice
+        required: false
+        default: blue-green
+        options:
+          - blue-green
+          - rolling
+          - canary
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Java
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Build
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          SKIP_TESTS: ${{ inputs.skip_tests }}
+        run: |
+          echo "Building version ${RELEASE_VERSION}"
+          mvn -B clean package -DskipTests="${SKIP_TESTS}"
+
+      - name: Test
+        if: ${{ !inputs.skip_tests }}
+        run: mvn -B test
+
+      - name: Publish test results
+        if: ${{ always() && !inputs.skip_tests }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: surefire-reports
+          path: "**/surefire-reports/*.xml"
+          if-no-files-found: warn
+
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: build-test
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure Kubernetes
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          test -n "${KUBE_CONFIG_DATA}"
+          printf '%s' "${KUBE_CONFIG_DATA}" | base64 --decode > "${RUNNER_TEMP}/kubeconfig"
+          chmod 600 "${RUNNER_TEMP}/kubeconfig"
+          echo "KUBECONFIG=${RUNNER_TEMP}/kubeconfig" >> "${GITHUB_ENV}"
+
+      - name: Deploy
+        env:
+          DEPLOYMENT_TYPE: ${{ inputs.deployment_type }}
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          case "${TARGET_ENVIRONMENT}" in
+            dev|staging)
+              kubectl apply -f "k8s/${TARGET_ENVIRONMENT}/"
+              ;;
+            production)
+              kubectl apply -f "k8s/production/${DEPLOYMENT_TYPE}/"
+              ;;
+          esac
+
+      - name: Run smoke tests
+        if: ${{ inputs.environment != 'dev' }}
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: curl --fail "http://${TARGET_ENVIRONMENT}.example.com/health"
+
+  post:
+    name: Post actions
+    if: ${{ always() }}
+    needs:
+      - build-test
+      - deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report success
+        if: ${{ needs.build-test.result == 'success' && needs.deploy.result == 'success' }}
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: echo "Deployment to ${TARGET_ENVIRONMENT} completed successfully"
+
+      - name: Report failure
+        if: ${{ needs.build-test.result != 'success' || needs.deploy.result != 'success' }}
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          echo "Deployment to ${TARGET_ENVIRONMENT} failed"
+          exit 1
